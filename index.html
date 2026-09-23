@@ -82,6 +82,7 @@ button{font-family:var(--ui); cursor:pointer}
 #tracker h4{font-family:var(--display); font-weight:500; font-size:13px; margin:0 0 5px; color:var(--ember)}
 #tracker p{margin:0 0 4px; color:#c9d4df; line-height:1.35}
 #tracker em{color:var(--muted); font-style:normal}
+#btnMuteHud{position:absolute; right:14px; bottom:14px; padding:7px 12px; font-size:12px; z-index:3}
 
 #hint{position:absolute; left:50%; bottom:92px; transform:translateX(-50%); padding:7px 13px; font-size:13px; white-space:nowrap}
 #hint b{color:var(--ember); font-weight:600}
@@ -177,6 +178,7 @@ body.touch #keys{display:none}
   #vitals{width:170px; bottom:auto; top:14px; left:14px}
   #hint{bottom:150px; font-size:12px}
   #castbar{bottom:132px}
+  #btnMuteHud{right:14px; bottom:14px; padding:6px 10px}
 }
 @media (prefers-reduced-motion: reduce){ *{animation-duration:.01ms !important} }
 </style>
@@ -204,6 +206,7 @@ body.touch #keys{display:none}
   <div id="lens"><canvas id="mini" width="154" height="154"></canvas><div id="lensRing"></div><div id="lensN">N</div></div>
   <div id="clock" class="plate"><b id="clockDay">Day 1</b> <span id="clockTime">06:00</span> <span id="clockPhase">dawn</span></div>
   <div id="tracker" class="plate"><h4 id="trackTitle">The Long Night</h4><p id="trackBody"></p></div>
+  <button class="btn" id="btnMuteHud">Mute: off</button>
 
   <div id="hint" class="plate hidden"></div>
   <div id="castbar" class="hidden"><i></i></div>
@@ -1559,6 +1562,38 @@ function updateNpcs(dt){
 
 /* ---- sound (pure oscillators) --------------------------------------- */
 let AC=null;
+let BGM=null;
+function ensureMusic(){
+  if(BGM) return BGM;
+  BGM = new Audio("video game music.mp3");
+  BGM.loop = true;
+  BGM.volume = 0.45;
+  BGM.preload = "auto";
+  return BGM;
+}
+function syncSoundButtons(){
+  const on = !!G.sound;
+  const t = on ? "on" : "off";
+  const titleBtn = $("#btnSound");
+  const hudBtn = $("#btnMuteHud");
+  if(titleBtn) titleBtn.textContent = "Sound: " + t;
+  if(hudBtn) hudBtn.textContent = "Mute: " + (on ? "off" : "on");
+}
+function syncMusicPlayback(){
+  const m = ensureMusic();
+  if(!m) return;
+  if(G.sound && G.mode==="play"){
+    m.play().catch(()=>{});
+  }else{
+    m.pause();
+  }
+}
+function toggleSound(){
+  G.sound = !G.sound;
+  syncSoundButtons();
+  if(G.sound) sfx("click");
+  syncMusicPlayback();
+}
 function sfx(kind){
   if(!G.sound) return;
   try{
@@ -2262,7 +2297,10 @@ $("#btnLoad").onclick=()=>{
   if(loadGame()){ beginPlay(); toast("Run restored — day "+G.day,"good"); }
   else toast("No saved run found","bad");
 };
-$("#btnSound").onclick=()=>{ G.sound=!G.sound; $("#btnSound").textContent="Sound: "+(G.sound?"on":"off"); if(G.sound) sfx("click"); };
+$("#btnSound").onclick=toggleSound;
+const _hudMuteBtn = $("#btnMuteHud");
+if(_hudMuteBtn) _hudMuteBtn.onclick=toggleSound;
+syncSoundButtons();
 addEventListener("visibilitychange",()=>{ if(document.hidden && G.mode==="play") saveGame(true); });
 
 
@@ -6032,6 +6070,7 @@ function beginPlay(){
   el.end.classList.add("hidden");
   closeSheet(); closeTalk();
   refreshHud(); refreshTracker(); drawMini();
+  syncMusicPlayback();
   saveT=20;
 }
 function endGame(trueEnding){
