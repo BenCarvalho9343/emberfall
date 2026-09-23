@@ -1563,13 +1563,23 @@ function updateNpcs(dt){
 /* ---- sound (pure oscillators) --------------------------------------- */
 let AC=null;
 let BGM=null;
+let _musicUnlockBound=false;
 function ensureMusic(){
   if(BGM) return BGM;
-  BGM = new Audio("video game music.mp3");
+  BGM = new Audio(new URL("video game music.mp3", window.location.href).href);
   BGM.loop = true;
   BGM.volume = 0.45;
   BGM.preload = "auto";
+  BGM.load();
   return BGM;
+}
+function bindMusicUnlock(){
+  if(_musicUnlockBound) return;
+  _musicUnlockBound=true;
+  const tryStart=()=>{ if(G.sound && G.mode==="play") syncMusicPlayback(); };
+  addEventListener("pointerdown", tryStart, {passive:true});
+  addEventListener("keydown", tryStart);
+  addEventListener("touchstart", tryStart, {passive:true});
 }
 function syncSoundButtons(){
   const on = !!G.sound;
@@ -2300,6 +2310,7 @@ $("#btnLoad").onclick=()=>{
 $("#btnSound").onclick=toggleSound;
 const _hudMuteBtn = $("#btnMuteHud");
 if(_hudMuteBtn) _hudMuteBtn.onclick=toggleSound;
+bindMusicUnlock();
 syncSoundButtons();
 addEventListener("visibilitychange",()=>{ if(document.hidden && G.mode==="play") saveGame(true); });
 
