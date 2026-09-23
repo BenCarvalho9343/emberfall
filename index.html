@@ -183,6 +183,7 @@ body.touch #keys{display:none}
 </head>
 <body>
 <div id="stage"><canvas id="game"></canvas></div>
+<audio id="bgm" src="video game music.mp3" loop preload="auto"></audio>
 
 <div id="hud" class="hidden">
   <div id="keys" class="plate">
@@ -6178,6 +6179,28 @@ document.getElementById("noteCancel").onclick=()=>{ D.note.classList.add("hidden
     "<kbd>Q</kbd> tasks \u00b7 <kbd>M</kbd> map \u00b7 <kbd>B</kbd> shared worlds \u00b7 "+
     "<kbd>G</kbd> leave a mark \u00b7 <kbd>T</kbd> torch \u00b7 <kbd>F</kbd> eat";
 })();
+/* ---- background music -------------------------------------------------- */
+const BGM = document.getElementById("bgm");
+if(BGM){
+  BGM.volume = 0.45;
+  function syncBgm(){
+    if(G.sound){
+      const p=BGM.play();
+      if(p&&p.catch) p.catch(()=>{});
+    }else{
+      BGM.pause();
+    }
+  }
+  const oldSoundHandler = $("#btnSound").onclick;
+  $("#btnSound").onclick=(e)=>{
+    oldSoundHandler?.(e);
+    syncBgm();
+  };
+  const unlockBgm=()=>syncBgm();
+  addEventListener("pointerdown",unlockBgm,{once:true});
+  addEventListener("keydown",unlockBgm,{once:true});
+  addEventListener("touchstart",unlockBgm,{once:true});
+}
 /* ---- go -------------------------------------------------------------- */
 resize();
 $("#seedIn").value=(Math.random()*1e9)|0;
