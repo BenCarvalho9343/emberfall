@@ -260,8 +260,8 @@ body.touch #keys{display:none}
 "use strict";
 /* ============================================================
    EMBERFALL — a single-file open world.
-   No libraries, no assets, no network. Everything below is
-   generated from an integer seed at runtime.
+   No JavaScript libraries. Art is generated at runtime;
+   music is local and the display fonts are loaded from Google Fonts.
    ============================================================ */
 
 const TS = 24;            // tile size in world pixels
@@ -735,6 +735,7 @@ function take(id,n){
   n=n||1; const p=G.player;
   if((p.inv[id]||0)<n) return false;
   p.inv[id]-=n; if(p.inv[id]<=0) delete p.inv[id];
+  questProgress("collect",id,0);
   return true;
 }
 function weaponDmg(){
@@ -860,6 +861,11 @@ function swingAt(){
     while(da>Math.PI) da-=Math.PI*2; while(da<-Math.PI) da+=Math.PI*2;
     if(Math.abs(da)>1.15) continue;
     hurtEnemy(e,dmg*(0.9+Math.random()*0.25), p.dir);
+    if(!e.dead && Math.random()<PK("riposte")*0.12){
+      hurtEnemy(e,dmg, p.dir);
+      if(!e.boss && !e.heavy) moveBody(e,Math.cos(p.dir)*26,Math.sin(p.dir)*26,false);
+      floater(e.x,e.y-28,"riposte","#e8c46a");
+    }
     hitAny=true;
   }
   if(hitAny){ G.shake=Math.max(G.shake,3); sfx("hit"); }
@@ -1138,13 +1144,21 @@ function fireBolt(e,a){
 }
 function updateProjectiles(dt){
   const p=G.player;
+  if(G.cine) return;
   for(let i=G.projectiles.length-1;i>=0;i--){
     const b=G.projectiles[i];
     b.x+=b.vx*dt; b.y+=b.vy*dt; b.life-=dt;
     if(Math.random()<dt*24) G.particles.push({x:b.x,y:b.y,vx:0,vy:0,life:0.3,max:0.3,c:b.col,r:2.6,g:0});
     if(b.life<=0 || solidAt(b.x,b.y,false)){ G.projectiles.splice(i,1); continue; }
-    if(p.alive && d2(b.x,b.y,p.x,p.y)<(p.r||9+8)*16){
-      damagePlayer(b.dmg,b); G.projectiles.splice(i,1);
+    if(!b.hitPlayer && p.alive && d2(b.x,b.y,p.x,p.y)<((p.r||9)+(b.r||5))**2){
+      const hit=damagePlayer(b.dmg,b);
+      if(hit && b.eff){
+        const durations={venom:5,root:1.2,chill:3};
+        if(durations[b.eff]) p.buffs[b.eff]=Math.max(p.buffs[b.eff]||0,durations[b.eff]);
+      }
+      // A piercing bolt can continue past the player, but cannot hit them every frame.
+      if(b.pierce>0){ b.pierce--; b.hitPlayer=true; }
+      else G.projectiles.splice(i,1);
     }
   }
 }
@@ -1194,7 +1208,7 @@ function killEnemy(e){
    6. TASKS — the quest log
    ============================================================ */
 function addQuest(q){
-  q.id=G.qid++; q.have=q.have||0; q.done=false; q.turned=false;
+  q.id=G.qid++; q.have=q.have||0; q.done=questCount(q)>=q.need; q.turned=false;
   G.quests.push(q); toast("New task: "+q.title,"gold"); sfx("quest");
   return q;
 }
@@ -1399,11 +1413,11 @@ function sheetQuest(){
   let h='<h2>Tasks</h2><p class="sub">'+live.length+' open · '+old.length+' finished</p>';
   if(!live.length) h+='<p class="sub">Nothing open. Villagers hand out work.</p>';
   for(const q of live){
-    h+='<div class="qcard '+(q.done?"done":"")+'"><h5>'+q.title+'</h5><p>'+q.desc+'</p>'+
+    h+='<div class="qcard '+(q.done?"done":"")+'"><h5>'+esc(q.title)+'</h5><p>'+esc(q.desc)+'</p>'+
        '<div class="prog">'+Math.min(questCount(q),q.need)+' / '+q.need+
-       (q.giver?' · from '+q.giver:'')+(q.done?' · ready to hand in':'')+'</div></div>';
+       (q.giver?' · from '+esc(q.giver):'')+(q.done?' · ready to hand in':'')+'</div></div>';
   }
-  for(const q of old) h+='<div class="qcard done"><h5>'+q.title+'</h5><p>Finished.</p></div>';
+  for(const q of old) h+='<div class="qcard done"><h5>'+esc(q.title)+'</h5><p>Finished.</p></div>';
   return h;
 }
 function sheetMap(){
@@ -1521,7 +1535,7 @@ function talkTo(n){
   n.line++;
   // main line
   if(n.role==="elder"){
-    if(G.flags.stage<1){
+    if(!(G.flags.stage>=1)){
       talkBox(who,"You walked in out of the dark, so you're either brave or lost. Listen. Four shrines ring this land. Each holds a spark and a warden that won't give it up. Kill the warden, take the shard, put it back in the stone. Do that four times and we get our mornings back.",
         [{t:"I'll do it",primary:true,fn:()=>{ startMain(); closeTalk(); }},
          {t:"Not today",fn:closeTalk}]);
@@ -1582,20 +1596,25 @@ function syncSoundButtons(){
 function syncMusicPlayback(){
   const m = ensureMusic();
   if(!m) return;
-  if(G.sound && G.mode==="play"){
+  if(G.sound && G.mode==="play" && !G.suspended){
     m.play().catch(()=>{});
   }else{
     m.pause();
   }
+  if(AC){
+    const pending=G.sound && !G.suspended ? AC.resume() : AC.suspend();
+    if(pending) pending.catch(()=>{});
+  }
 }
 function toggleSound(){
   G.sound = !G.sound;
+  try{ localStorage.setItem("emberfall.sound",JSON.stringify(G.sound)); }catch(e){}
   syncSoundButtons();
   if(G.sound) sfx("click");
   syncMusicPlayback();
 }
 function sfx(kind){
-  if(!G.sound) return;
+  if(!G.sound || G.suspended) return;
   try{
     if(!AC) AC=new (window.AudioContext||window.webkitAudioContext)();
     if(AC.state==="suspended") AC.resume();
@@ -1886,7 +1905,7 @@ function drawShrine(s){
     ctx.globalAlpha=1;
     ctx.fillStyle="#fff3d0";
     ctx.beginPath(); ctx.ellipse(x,y-33,3.4*f,6*f,0,0,7); ctx.fill();
-    if(Math.random()<0.4) G.particles.push({x:s.x+(Math.random()-0.5)*14,y:s.y-34,
+    if(ambientParticle(0.4)) G.particles.push({x:s.x+(Math.random()-0.5)*14,y:s.y-34,
       vx:(Math.random()-0.5)*14,vy:-40-Math.random()*40,life:1.2,max:1.2,c:s.col,r:2.4,g:-10});
   } else {
     ctx.fillStyle="rgba(20,26,34,.85)";
@@ -1904,7 +1923,7 @@ function drawFire(f){
   ctx.fillStyle="#ffdf9a";
   ctx.beginPath(); ctx.ellipse(x,y-7,2.6*fl,5.5*fl,0,0,7); ctx.fill();
   ctx.globalAlpha=1;
-  if(Math.random()<0.5) G.particles.push({x:f.x+(Math.random()-0.5)*8,y:f.y-12,
+  if(ambientParticle(0.5)) G.particles.push({x:f.x+(Math.random()-0.5)*8,y:f.y-12,
     vx:(Math.random()-0.5)*12,vy:-36-Math.random()*26,life:0.9,max:0.9,c:"#f0873a",r:2,g:-8});
 }
 function body(x,y,col,dark,bobv,lean){
@@ -2038,6 +2057,10 @@ function drawPlayer(){
     ctx.fillText("freezing", x, y-40); ctx.textAlign="left";
   }
 }
+function ambientParticle(chance){
+  return !G.suspended && (G.mode==="menu" || !frozen()) &&
+    Math.random()<1-Math.pow(1-chance,(G.fxDt||1/60)*60);
+}
 function drawEffects(dt){
   for(let i=G.particles.length-1;i>=0;i--){
     const p=G.particles[i];
@@ -2129,22 +2152,49 @@ function drawMini(){
    ============================================================ */
 const touch={act:false,x:0,y:0,hit:false,use:false,run:false,id:null};
 function talkOpen(){ return !el.talk.classList.contains("hidden"); }
-function frozen(){ return openPanel!==null || talkOpen() || G.mode!=="play"; }
+function frozen(){
+  return G.suspended || openPanel!==null || talkOpen() || G.mode!=="play" ||
+    !el.end.classList.contains("hidden") || !$("#noteBox").classList.contains("hidden");
+}
+function editingText(target){
+  return target && (target.tagName==="INPUT" || target.tagName==="TEXTAREA" || target.isContentEditable);
+}
+function clearInput(){
+  for(const key in keys) delete keys[key];
+  mouse.down=false; mouse.active=false;
+  touch.act=touch.hit=touch.use=touch.run=false; touch.x=touch.y=0; touch.id=null;
+  nub.style.transform="none";
+  if(G.player) G.player.vx=G.player.vy=0;
+  G.flags.useLatch=false; G.flags.toolWarn=0; gather=null; setCast(0);
+}
+function syncLifecycle(){
+  const suspended=document.hidden || !document.hasFocus();
+  if(suspended){ clearInput(); if(G.mode==="play") saveGame(true); }
+  G.suspended=suspended;
+  last=now();
+  syncMusicPlayback();
+}
 
 addEventListener("keydown",e=>{
   const k=e.key.toLowerCase();
-  if(e.target.tagName==="INPUT") return;
+  if(editingText(e.target)) return;
+  if(k==="s"&&(e.ctrlKey||e.metaKey)){
+    if(G.mode==="play"){ e.preventDefault(); saveGame(); } return;
+  }
+  if(e.ctrlKey||e.metaKey||e.altKey) return;
+  if(k==="escape" && G.cine) { e.preventDefault(); if(!e.repeat) skipCine(); return; }
+  if(G.suspended) return;
   keys[k]=true;
-  if(k===" "||k==="arrowup"||k==="arrowdown") e.preventDefault();
+  if(k===" "||k.startsWith("arrow")) e.preventDefault();
   if(G.mode!=="play") return;
-  if(k==="s"&&(e.ctrlKey||e.metaKey)){ e.preventDefault(); saveGame(); return; }
+  if(e.repeat) return;
   if(k==="escape"){ if(talkOpen()) closeTalk(); else if(openPanel) closeSheet(); return; }
-  if(talkOpen()) return;
+  if(talkOpen() || G.cine || !el.end.classList.contains("hidden")) return;
   if(k==="i") toggle("inv"); else if(k==="c") toggle("craft");
   else if(k==="q") toggle("quest"); else if(k==="m") toggle("map");
   else if(k==="t"){ if(has("torch")){ G.player.torch=!G.player.torch; sfx("click");
       toast(G.player.torch?"Torch lit":"Torch out"); } else toast("No torch in your bag","bad"); }
-  else if(k==="f"&&!openPanel) eatBest();
+  else if(k==="f"&&!frozen()) eatBest();
 });
 addEventListener("keyup",e=>{
   const k=e.key.toLowerCase(); keys[k]=false;
@@ -2175,12 +2225,21 @@ function stickMove(e){
 }
 stick.addEventListener("touchstart",e=>{ touch.id=e.changedTouches[0].identifier; stickMove(e); },{passive:false});
 stick.addEventListener("touchmove",stickMove,{passive:false});
-stick.addEventListener("touchend",()=>{ touch.act=false; touch.x=touch.y=0; touch.run=false;
-  nub.style.transform="none"; });
+const releaseStick=e=>{
+  if(e.touches && [...e.touches].some(t=>t.identifier===touch.id)) return;
+  touch.act=false; touch.x=touch.y=0; touch.run=false; touch.id=null;
+  nub.style.transform="none";
+};
+stick.addEventListener("touchend",releaseStick);
+stick.addEventListener("touchcancel",releaseStick);
 const bind=(id,prop)=>{ const b=$(id);
   b.addEventListener("touchstart",e=>{ touch[prop]=true; e.preventDefault(); },{passive:false});
   b.addEventListener("touchend",e=>{ touch[prop]=false;
     if(prop==="use"){ G.flags.useLatch=false; G.flags.toolWarn=0; } e.preventDefault(); },{passive:false});
+  b.addEventListener("touchcancel",()=>{
+    touch[prop]=false;
+    if(prop==="use"){ G.flags.useLatch=false; G.flags.toolWarn=0; gather=null; setCast(0); }
+  });
 };
 bind("#tHit","hit"); bind("#tUse","use");
 document.querySelectorAll("#tmenu .tbtn").forEach(b=>b.onclick=()=>toggle(b.dataset.panel));
@@ -2295,13 +2354,20 @@ $("#rollSeed").onclick=()=>{
 $("#btnNew").onclick=()=>{ sfx("click"); startGame($("#seedIn").value); };
 $("#btnLoad").onclick=()=>{
   if(loadGame()){ beginPlay(); toast("Run restored — day "+G.day,"good"); }
-  else toast("No saved run found","bad");
+  else toast("The saved run could not be read. It has been left untouched.","bad");
 };
 $("#btnSound").onclick=toggleSound;
 const _hudMuteBtn = $("#btnMuteHud");
 if(_hudMuteBtn) _hudMuteBtn.onclick=toggleSound;
 syncSoundButtons();
-addEventListener("visibilitychange",()=>{ if(document.hidden && G.mode==="play") saveGame(true); });
+document.addEventListener("visibilitychange",syncLifecycle);
+addEventListener("blur",syncLifecycle);
+addEventListener("focus",syncLifecycle);
+addEventListener("pagehide",()=>{
+  clearInput(); G.suspended=true; syncMusicPlayback();
+  if(G.mode==="play") saveGame(true);
+});
+addEventListener("pageshow",syncLifecycle);
 
 
 /* ============================================================================
@@ -3109,6 +3175,16 @@ function paintTile(g,px,py,x,y,b,f){
 }
 
 /* ---- landmarks, rebuilt ------------------------------------------------ */
+function shuffleWorld(values,rnd){
+  // Retain the old sequence only to migrate an existing run in its original runtime.
+  // Its realised ruin layout is then stored in the save and in shared codes.
+  if(G.world.version===1) return values.sort(()=>rnd()-0.5);
+  for(let i=values.length-1;i>0;i--){
+    const j=Math.floor(rnd()*(i+1));
+    [values[i],values[j]]=[values[j],values[i]];
+  }
+  return values;
+}
 function makeLandmarks(){
   const rnd=rngFrom(G.seed^0x5eed);
   G.villages=[]; G.shrines=[]; G.ruins=[]; G.npcs=[];
@@ -3151,10 +3227,14 @@ function makeLandmarks(){
       name:el.n, col:el.c, elem:el.k, lit:false, guard:false, known:false, idx:qi,
       beaten:false, notes:[]});
   });
+  if(G.world.ruins){
+    G.ruins=G.world.ruins.map(r=>({...r,x:r.tx*TS+TS/2,y:r.ty*TS+TS/2,
+      opened:false,stones:ruinStones(r.tx,r.ty)}));
+  } else {
   /* ruins: relax the spacing until there are enough to carry every page */
   for(const [openMin,gap,vgap] of [[0.70,50,40],[0.58,38,32],[0.44,28,26],[0.30,20,20]]){
     if(G.ruins.length>=RUIN_TARGET) break;
-    const rc=cands.filter(c=>c.open>openMin).sort(()=>rnd()-0.5);
+    const rc=shuffleWorld(cands.filter(c=>c.open>openMin),rnd);
     for(const c of rc){
       if(G.ruins.length>=RUIN_TARGET) break;
       if(!far(G.ruins,c.tx,c.ty,gap)) continue;
@@ -3165,8 +3245,9 @@ function makeLandmarks(){
     }
   }
   /* pages the village questlines hand over don't also get buried in a ruin */
-  const order=LORE.map(l=>l.id).filter(id=>!QUEST_PAGES.has(id)).sort(()=>rnd()-0.5);
+  const order=shuffleWorld(LORE.map(l=>l.id).filter(id=>!QUEST_PAGES.has(id)),rnd);
   G.ruins.forEach((u,i)=>{ if(i<order.length) u.lore=order[i]; });
+  }
   /* the Deepshrine */
   G.deep={ tx:CENTRE, ty:CENTRE, x:CENTRE*TS+TS/2, y:CENTRE*TS+TS/2,
     gx:CENTRE*TS+TS/2, gy:(CENTRE-DEEP_WALL+1.5)*TS, known:false, open:false,
@@ -3343,7 +3424,7 @@ function drawPlayer(){
       ctx.strokeStyle=wcol; ctx.lineWidth=3.6;
       ctx.beginPath(); ctx.moveTo(x+Math.cos(a)*9,y-10+Math.sin(a)*9);
       ctx.lineTo(x+Math.cos(a)*29,y-10+Math.sin(a)*29); ctx.stroke();
-      if(ITEMS[p.weapon]&&ITEMS[p.weapon].burn && Math.random()<0.7)
+      if(ITEMS[p.weapon]&&ITEMS[p.weapon].burn && ambientParticle(0.7))
         G.particles.push({x:p.x+Math.cos(a)*26,y:p.y-10+Math.sin(a)*26,
           vx:Math.cos(a)*30,vy:Math.sin(a)*30-20,life:0.35,max:0.35,c:wcol,r:2.4,g:0});
     }
@@ -3364,7 +3445,7 @@ function drawPlayer(){
     let i=0;
     for(const k in p.buffs){ if(p.buffs[k]<=0) continue;
       const col={rage:"#f0873a",wind:"#7fc4e8",warm:"#f6c46a"}[k]||"#fff";
-      if(Math.random()<0.22) G.particles.push({x:p.x+(Math.random()-0.5)*16,y:p.y-6,
+      if(ambientParticle(0.22)) G.particles.push({x:p.x+(Math.random()-0.5)*16,y:p.y-6,
         vx:0,vy:-26,life:0.6,max:0.6,c:col,r:1.9,g:0});
       i++;
     }
@@ -3400,7 +3481,7 @@ function drawHouse(h){
     ctx.beginPath(); ctx.moveTo(x+6,y+14); ctx.lineTo(x-4,y+34); ctx.lineTo(x+26,y+34); ctx.lineTo(x+15,y+14); ctx.fill(); }
   if(h.chimney){
     ctx.fillStyle="#5a4a3e"; ctx.fillRect(x+h.w-14,y-26,8,14);
-    if(Math.random()<0.10) G.particles.push({x:h.x+h.w-10,y:h.y-28,
+    if(ambientParticle(0.10)) G.particles.push({x:h.x+h.w-10,y:h.y-28,
       vx:(Math.random()-0.3)*8,vy:-14-Math.random()*10,life:2.4,max:2.4,c:"rgba(190,190,190,.5)",r:3.2,g:-2});
   }
   if(h.porch){
@@ -3811,7 +3892,7 @@ function spawnMob(kind,x,y,extra){
     spd:m.spd, state:"wander", t:Math.random()*6, cd:0, cd2:2+Math.random()*3, flash:0,
     dead:false, bob:Math.random()*6, wx:x, wy:y, ranged:m.ranged||0, boss:false,
     ai:m.ai||"chase", fly:m.fly||0, glow:m.glow||0, anim:Math.random(), dir:Math.random()*6.28,
-    burn:0, slow:0, col:m.col, phase:1, shield:0};
+    burn:0, slow:0, col:m.col, phase:1, shield:0, homeX:x, homeY:y};
   Object.assign(e, extra||{});
   e.maxHp=Math.max(e.maxHp,e.hp);
   G.enemies.push(e); return e;
@@ -3841,6 +3922,7 @@ function spawnFinalBoss(){
   return b;
 }
 function fireBolt(e,a,o){
+  if(e.dead) return;
   o=o||{};
   const col=o.col||e.col||"#a8dcf0", sp=o.sp||250;
   G.projectiles.push({x:e.x+(o.ox||0),y:e.y-6+(o.oy||0),vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,
@@ -3853,6 +3935,7 @@ function ringBurst(e,n,off,o){
 
 function updateEnemies(dt){
   const p=G.player;
+  if(G.cine) return;
   const fogA = (G.weather&&G.weather.kind==="fog")? lerp(1,0.65,wStrength()) : 1;
   for(let i=G.enemies.length-1;i>=0;i--){
     const e=G.enemies[i];
@@ -3881,11 +3964,18 @@ function updateEnemies(dt){
     }
     let tx,ty, spd=e.spd*(1-e.slow*0.5);
     if(e.state==="chase") { tx=p.x; ty=p.y; }
-    else if(e.state==="home"){ tx=e.shrine.x; ty=e.shrine.y;
-      if(dd(e.x,e.y,tx,ty)<TS*2){ e.state="wander"; } }
+    else if(e.state==="home"){
+      const home=e.shrine || (e.final && G.deep) || {x:e.homeX,y:e.homeY};
+      tx=home.x; ty=home.y;
+      if(dd(e.x,e.y,tx,ty)<TS*2){ e.state="wander"; e.wx=tx; e.wy=ty; }
+    }
     else {
       if(e.t>2.6){ e.t=0; e.wx=e.x+(Math.random()-0.5)*190; e.wy=e.y+(Math.random()-0.5)*190; }
       tx=e.wx; ty=e.wy; spd*=0.42;
+    }
+    if(e.shrine && e.phase===1 && e.hp<=e.maxHp*0.5){
+      e.phase=2; e.cd=Math.min(e.cd,0.5); e.cd2=Math.min(e.cd2,1);
+      toast(GUARD_NAME[e.elem]+" fights harder","bad"); sfx("boss");
     }
     if(e.state==="chase" && p.alive) spd = runAI(e,dt,dist,spd) ?? spd;
     const a=Math.atan2(ty-e.y,tx-e.x);
@@ -4131,10 +4221,11 @@ function hurtEnemy(e,dmg,dir,silent){
   for(let i=0;i<7;i++) G.particles.push({x:e.x,y:e.y,vx:(Math.random()-0.5)*110,
     vy:(Math.random()-0.5)*110,life:0.35,max:0.35,c:e.col||"#c8c8c8",r:2.6,g:80});
   const w=G.player.weapon;
-  if(w && ITEMS[w] && ITEMS[w].burn){ e.burn=Math.max(e.burn,2.2); e.burnDmg=3+G.player.lvl*0.4; }
+  if(!silent && w && ITEMS[w] && ITEMS[w].burn){ e.burn=Math.max(e.burn,2.2); e.burnDmg=3+G.player.lvl*0.4; }
   if(e.hp<=0) killEnemy(e);
 }
 function killEnemy(e){
+  if(e.dead) return;
   e.dead=true;
   const m=MOBS[e.kind]||MOBS.wisp;
   sfx("kill"); G.shake=Math.max(G.shake,e.boss?14:2);
@@ -4401,7 +4492,7 @@ function drawHollowLamp(e,x,y){
   ctx.fillStyle="rgba(246,217,138,.85)";
   ctx.beginPath(); ctx.arc(-6,-60,1.4,0,7); ctx.arc(6,-60,1.4,0,7); ctx.fill();
   ctx.restore();
-  if(Math.random()<0.5) G.particles.push({x:e.x+(Math.random()-0.5)*50,y:e.y-20,
+  if(ambientParticle(0.5)) G.particles.push({x:e.x+(Math.random()-0.5)*50,y:e.y-20,
     vx:(Math.random()-0.5)*20,vy:-30-Math.random()*40,life:1.4,max:1.4,c:"#f6d98a",r:2.4,g:-12});
 }
 
@@ -4462,6 +4553,7 @@ function nearStation(kind){
 function updatePlayer(dt){
   const p=G.player;
   if(!p.alive){ p.deadT-=dt; if(p.deadT<=0) respawn(); return; }
+  if(G.cine) return;
   let ix=0, iy=0;
   if(!G.cine){
     if(keys["w"]||keys["arrowup"]) iy--;
@@ -4482,6 +4574,8 @@ function updatePlayer(dt){
   spd*= lerp(1, wActive().speed, wStrength());
   if(p.food<=0) spd*=0.7;
   if(p.buffs.wind>0) spd*=1.06;
+  if(p.buffs.root>0) spd=0;
+  else if(p.buffs.chill>0) spd*=0.55;
   if(sprint){ p.st=Math.max(0,p.st-12*dt*(p.buffs.wind>0?0.6:1)*(1-PK("wind")*0.18)); p.regen=0.7; }
   if(mag>0.05){
     p.vx=ix*spd; p.vy=iy*spd;
@@ -4509,6 +4603,7 @@ function updatePlayer(dt){
   p.swindCd=Math.max(0,p.swindCd-dt);
   for(const k in p.buffs){ p.buffs[k]=Math.max(0,p.buffs[k]-dt);
     if(p.buffs[k]<=0) delete p.buffs[k]; }
+  if(p.buffs.venom>0) damagePlayer(dt*2,null,true);
   p.maxHp=baseMaxHp();
   if(p.food>25 && p.combat<=0 && p.hp<p.maxHp) p.hp=Math.min(p.maxHp,p.hp+dt*1.5);
   if(p.food<=0) damagePlayer(dt*0.8,null,true);
@@ -4563,9 +4658,9 @@ function updatePlayer(dt){
 }
 function damagePlayer(amt,from,silent){
   const p=G.player;
-  if(!p.alive||G.cine==="trueEnd") return;
+  if(!p.alive || G.cine || frozen()) return false;
   if(!silent){
-    if(p.invuln>0) return;
+    if(p.invuln>0) return false;
     amt*=(1-defence());
     p.invuln=0.55; p.hurt=0.35; p.combat=6; G.shake=Math.max(G.shake,5);
     sfx("ouch");
@@ -4585,6 +4680,7 @@ function damagePlayer(amt,from,silent){
     for(let i=0;i<26;i++) G.particles.push({x:p.x,y:p.y,vx:(Math.random()-0.5)*90,
       vy:(Math.random()-0.5)*90,life:0.9,max:0.9,c:"#cf4b45",r:3,g:50});
   }
+  return true;
 }
 function respawn(){
   const p=G.player;
@@ -4592,8 +4688,16 @@ function respawn(){
   if(p.home){ sx0=p.home.x; sy0=p.home.y; }
   else { const v=G.villages[0]; sx0=v.x; sy0=v.y+TS*2; }
   p.x=sx0; p.y=sy0; p.hp=Math.round(p.maxHp*0.55); p.st=p.maxSt; p.food=Math.max(p.food,45);
-  p.alive=true; p.invuln=2.4; p.buffs={};
-  G.enemies=G.enemies.filter(e=>e.boss? (e.state="home",true) : d2(e.x,e.y,p.x,p.y)>(TS*20)**2);
+  p.alive=true; p.deadT=0; p.invuln=2.4; p.buffs={};
+  G.enemies=G.enemies.filter(e=>{
+    if(e.dead || e.minion) return false;
+    if(!e.boss) return d2(e.x,e.y,p.x,p.y)>(TS*20)**2;
+    e.state="home"; e.hp=e.maxHp; e.phase=1; e.burn=e.slow=e.shield=0;
+    e.cd=1; e.cd2=3;
+    return true;
+  });
+  G.projectiles=[]; _pending.length=0;
+  clearInput();
   const lost=Math.floor(p.coins*0.2); p.coins-=lost;
   G.stats.deaths=(G.stats.deaths||0)+1;
   toast(lost>0?("You wake by the fire. "+lost+" coin lost."):"You wake by the fire.","bad");
@@ -4737,14 +4841,15 @@ function questProgress(type,key,amt){
     if(q.type!==type) continue;
     if(q.key!==key && !(type==="kill" && q.key==="any")) continue;
     if(type!=="collect") q.have=(q.have||0)+amt;
-    if(!q.done && questCount(q)>=q.need){
-      q.done=true; toast("Ready to hand in: "+q.title,"good"); sfx("quest");
-    }
+    const ready=questCount(q)>=q.need;
+    if(!q.done && ready){ toast("Ready to hand in: "+q.title,"good"); sfx("quest"); }
+    q.done=ready;
   }
   refreshTracker();
 }
 function finishQuest(q){
-  if(q.type==="collect" && !q.keep) take(q.key,q.need);
+  if(!q || q.turned || !G.quests.includes(q) || questCount(q)<q.need) return false;
+  if(q.type==="collect" && !q.keep && !take(q.key,q.need)) return false;
   q.turned=true; q.done=true;
   G.player.coins+=q.coin||0; gainXp(q.xp||0);
   const extras=[];
@@ -4764,6 +4869,7 @@ function finishQuest(q){
   sfx("level");
   G.stats.tasks=(G.stats.tasks||0)+1;
   refreshTracker();
+  return true;
 }
 function collectLore(id,quiet){
   const p=G.player;
@@ -5133,7 +5239,7 @@ function talkTo(n){
   const q=activeStep(n);
 
   if(n.role==="elder"){
-    if(G.flags.stage<1){
+    if(!(G.flags.stage>=1)){
       talkBox(who,"You came in out of the dark, so you're either brave or lost. Four shrines ring this land. Each holds a spark and a warden that won't give it up. Kill the warden, take the shard, put it back in the stone. Do that four times and we get our mornings back.",
         [{t:"I'll do it",primary:true,fn:()=>{ startMain(); revealShrines(); closeTalk(); }},
          {t:"Not today",fn:closeTalk}]);
@@ -5153,7 +5259,7 @@ function talkTo(n){
   if(n.role==="smith") opts.push({t:"Trade",fn:()=>{ closeTalk(); openCodex("shop",n); }});
 
   if(q){
-    if(q.done) opts.push({t:"Hand it in",primary:true,fn:()=>{ finishQuest(q); closeTalk();
+    if(q.done) opts.push({t:"Hand it in",primary:true,fn:()=>{ if(!finishQuest(q)) return; closeTalk();
       const nx=isArcGiver(n)?startArcStep(n):null;
       if(nx) setTimeoutSafe(()=>talkBox(who,nx.desc,[{t:"On it",fn:closeTalk}]),0.45); }});
     else opts.push({t:"About your task",fn:()=>talkBox(who,
@@ -5254,6 +5360,7 @@ function canLeaveMark(){
 }
 function promptMark(){
   if(!canLeaveMark()){ toast("Stand at a shrine or a campfire to leave a mark","bad"); return; }
+  clearInput();
   D.note.classList.remove("hidden"); D.noteIn.value=""; D.noteIn.focus();
 }
 function saveMark(){
@@ -5268,6 +5375,213 @@ function saveMark(){
 }
 
 /* ---- 19. shared worlds (async, no server) ------------------------------ */
+// Validate before touching the live world. Return fresh objects with only supported fields.
+function dataObject(value){
+  if(!value || typeof value!=="object" || Array.isArray(value)) throw new Error("Invalid object");
+  return value;
+}
+function dataNumber(value,min=0,max=1e9,fallback){
+  if(value===undefined && fallback!==undefined) return fallback;
+  if(typeof value!=="number" || !Number.isFinite(value) || value<min || value>max)
+    throw new Error("Invalid number");
+  return value;
+}
+function dataInt(value,min=0,max=1e9,fallback){
+  const n=dataNumber(value,min,max,fallback);
+  if(!Number.isInteger(n)) throw new Error("Invalid integer");
+  return n;
+}
+function dataText(value,max,fallback=""){
+  if(value===undefined) return fallback;
+  if(typeof value!=="string" || value.length>max) throw new Error("Invalid text");
+  return value;
+}
+function dataList(value,max){
+  if(value===undefined) return [];
+  if(!Array.isArray(value) || value.length>max) throw new Error("Invalid list");
+  return value;
+}
+function dataBool(value,fallback=false){
+  if(value===undefined) return fallback;
+  if(value!==true && value!==false && value!==0 && value!==1) throw new Error("Invalid flag");
+  return !!value;
+}
+function dataChoice(value,choices,fallback){
+  if(value===undefined && fallback!==undefined) return fallback;
+  if(!choices.includes(value)) throw new Error("Unsupported value");
+  return value;
+}
+function dataCounts(value,allowed){
+  const out={};
+  for(const [key,n] of Object.entries(dataObject(value===undefined?{}:value))){
+    if(!allowed.includes(key)) throw new Error("Unknown item");
+    out[key]=dataInt(n);
+  }
+  return out;
+}
+function parseData(text,max=5000000){
+  if(typeof text!=="string" || text.length>max) throw new Error("Invalid data size");
+  return JSON.parse(text,(key,value)=>{
+    if(["__proto__","constructor","prototype"].includes(key)) throw new Error("Invalid key");
+    return value;
+  });
+}
+function dataPoint(raw){
+  const p=dataObject(raw);
+  return {x:dataNumber(p.x,0,WORLD*TS),y:dataNumber(p.y,0,WORLD*TS)};
+}
+function dataWorld(raw){
+  const w=dataObject(raw===undefined?{version:1}:raw);
+  const out={version:dataChoice(w.version,[1,2])};
+  if(w.ruins!==undefined){
+    const used=new Set();
+    out.ruins=dataList(w.ruins,100).map(r=>{
+      dataObject(r);
+      const tx=dataInt(r.tx,4,WORLD-5), ty=dataInt(r.ty,4,WORLD-5), key=tx*WORLD+ty;
+      if(used.has(key)) throw new Error("Duplicate ruin");
+      used.add(key);
+      return {tx,ty,seed:dataInt(r.seed,0,0xffffffff),lore:dataInt(r.lore,0,LORE.length,0),big:dataBool(r.big)};
+    });
+    if(!out.ruins.length) throw new Error("Missing ruins");
+  }
+  return out;
+}
+function dataFriend(raw){
+  const f=dataObject(raw), v=dataChoice(f.v,[1,2],1);
+  const out={v,s:dataInt(f.s,0,0xffffffff),n:dataText(f.n,24,"a traveller"),
+    world:dataWorld(f.world),tr:[],no:[]};
+  if(v===2 && !out.world.ruins) throw new Error("Missing world layout");
+  for(const k of ["d","l","lit","lo","k","t","w","a","c","lamp"]){
+    const max={lit:4,lo:LORE.length,w:4,a:ARCS.length,lamp:1}[k]??1e9;
+    out[k]=dataInt(f[k],k==="d"||k==="l"?1:0,max,k==="d"||k==="l"?1:0);
+  }
+  const trail=dataList(f.tr,260);
+  if(trail.length%2) throw new Error("Incomplete trail");
+  let x=0,y=0;
+  for(let i=0;i<trail.length;i+=2){
+    const dx=dataInt(trail[i],-WORLD,WORLD),dy=dataInt(trail[i+1],-WORLD,WORLD);
+    x+=dx; y+=dy; dataInt(x,0,WORLD-1); dataInt(y,0,WORLD-1);
+    out.tr.push(dx,dy);
+  }
+  out.no=dataList(f.no,14).map(n=>{
+    if(!Array.isArray(n)||n.length!==3) throw new Error("Invalid mark");
+    return [dataNumber(n[0],0,WORLD*TS),dataNumber(n[1],0,WORLD*TS),dataText(n[2],90)];
+  });
+  return out;
+}
+function sameWorld(f){
+  if(f.s!==G.seed || f.world.version!==G.world.version) return false;
+  if(!f.world.ruins) return true; // Legacy codes did not contain a realised layout.
+  return JSON.stringify(f.world.ruins)===JSON.stringify(G.world.ruins);
+}
+function dataSave(raw){
+  const d=dataObject(raw), version=dataChoice(d.v,[1,2,3],1);
+  const out={v:version,seed:dataInt(d.seed,0,0xffffffff),world:dataWorld(d.world)};
+  if(version===3 && !out.world.ruins) throw new Error("Missing saved world");
+  out.time=dataNumber(d.time,0,1e12,0); out.day=dataInt(d.day,1,1e9,1);
+  out.dayT=dataNumber(d.dayT,0,1,0.3); out.lit=dataInt(d.lit,0,4,0);
+  out.dawnFade=dataNumber(d.dawnFade,0,1,out.lit===4?1:0);
+  out.myName=dataText(d.myName,24);
+  const p=dataObject(d.player);
+  const player={...dataPoint(p),lvl:dataInt(p.lvl,1,10000,1),xp:dataNumber(p.xp,0,1e9,0),
+    coins:dataInt(p.coins,0,1e9,0),food:dataNumber(p.food,0,100,100),
+    inv:dataCounts(p.inv,Object.keys(ITEMS)),perks:dataCounts(p.perks,Object.keys(PERK_INDEX)),
+    perkPts:dataInt(p.perkPts,0,1e6,0),buffs:{},lore:[],trail:[],torch:dataBool(p.torch),
+    shrineHp:dataInt(p.shrineHp,0,40,version>=2?out.lit*10:0),wet:dataNumber(p.wet,0,1,0),
+    swindCd:dataNumber(p.swindCd,0,90,0),alive:dataBool(p.alive,p.hp>0),deadT:dataNumber(p.deadT,0,2.6,0)};
+  for(const [key,rank] of Object.entries(player.perks))
+    if(rank>PERK_INDEX[key].max) throw new Error("Invalid perk rank");
+  for(const slot of ["weapon","armour"]){
+    const id=p[slot]??null;
+    if(id!==null && (!Object.prototype.hasOwnProperty.call(ITEMS,id) || ITEMS[id].type!==slot || !player.inv[id]))
+      throw new Error("Invalid equipment");
+    player[slot]=id;
+  }
+  player.maxHp=60+(player.lvl-1)*9+(player.perks.hardy||0)*12+player.shrineHp;
+  player.maxSt=100+(player.lvl-1)*4;
+  player.hp=Math.min(player.maxHp,dataNumber(p.hp,0,1e6));
+  player.st=Math.min(player.maxSt,dataNumber(p.st,0,1e6,100));
+  if(player.hp===0) player.alive=false;
+  const buffLimits={rage:32,wind:45,warm:180,venom:5,root:1.2,chill:3};
+  for(const [key,duration] of Object.entries(dataObject(p.buffs??{}))){
+    if(!Object.prototype.hasOwnProperty.call(buffLimits,key)) throw new Error("Unknown effect");
+    player.buffs[key]=dataNumber(duration,0,buffLimits[key]);
+  }
+  player.lore=[...new Set(dataList(p.lore,LORE.length).map(id=>dataInt(id,1,LORE.length)))];
+  player.trail=dataList(p.trail,260).map(point=>{
+    if(!Array.isArray(point)||point.length!==2) throw new Error("Invalid trail");
+    return [dataInt(point[0],0,WORLD-1),dataInt(point[1],0,WORLD-1)];
+  });
+  out.player=player;
+  out.flags={};
+  const flags=dataObject(d.flags??{});
+  for(const key of ["oneLit","cold","won","trueWon","dawnShown","sunsteel"])
+    out.flags[key]=dataBool(flags[key]);
+  out.flags.stage=dataInt(flags.stage,0,1,0);
+  out.stats=dataCounts(d.stats,["arcs","caches","days","deaths","gathered","kills","lamp","lore","made","tasks","villages","wardens"]);
+  out.kills=dataCounts(d.kills,Object.keys(MOBS));
+  out.arcs=dataCounts(d.arcs,ARCS.map(a=>a.id));
+  for(const a of ARCS) if((out.arcs[a.id]||0)>a.steps.length) throw new Error("Invalid quest arc");
+  const ids=new Set();
+  out.quests=dataList(d.quests,10000).map(raw=>{
+    const q=dataObject(raw), type=dataChoice(q.type,["main","collect","kill","loot"]);
+    const keys=type==="collect"?Object.keys(ITEMS):type==="kill"?[...Object.keys(MOBS),"any","warden"]:
+      type==="main"?["elder","shrine"]:["ruin"];
+    const quest={id:dataInt(q.id,1),type,key:dataChoice(q.key,keys),need:dataInt(q.need,1,1e6),
+      have:dataInt(q.have,0,1e9,0),title:dataText(q.title,300),desc:dataText(q.desc,2000),
+      turned:dataBool(q.turned),keep:dataBool(q.keep),coin:dataInt(q.coin,0,1e6,0),xp:dataInt(q.xp,0,1e6,0),
+      items:dataCounts(q.items,Object.keys(ITEMS)),giver:dataText(q.giver,100),
+      lore:dataInt(q.lore,0,LORE.length,0),perk:dataInt(q.perk,0,100,0)};
+    if(ids.has(quest.id)) throw new Error("Duplicate quest"); ids.add(quest.id);
+    if(q.giverId!==undefined) quest.giverId=dataInt(q.giverId,0,99);
+    if(q.arc){
+      quest.arc=dataChoice(q.arc,ARCS.map(a=>a.id));
+      quest.stepIdx=dataInt(q.stepIdx,0,ARCS.find(a=>a.id===quest.arc).steps.length-1);
+    }
+    if(q.unlock) quest.unlock=dataChoice(q.unlock,["sunsteel"]);
+    quest.done=quest.turned || (type==="collect"?(player.inv[quest.key]||0):quest.have)>=quest.need;
+    return quest;
+  });
+  out.qid=Math.max(dataInt(d.qid,1,1e9,1),1,...out.quests.map(q=>q.id+1));
+  out.fires=dataList(d.fires,10000).map(f=>({...dataPoint(f),kind:dataChoice(f.kind,["camp","forge"],"camp")}));
+  out.lanterns=dataList(d.lanterns,10000).map(dataPoint);
+  out.home=d.home==null?null:dataPoint(d.home);
+  out.myNotes=dataList(d.myNotes,10000).map(n=>({...dataPoint(n),text:dataText(n.text,90),day:dataInt(n.day,1,1e9,1)}));
+  out.friends=dataList(d.friends,6).map(dataFriend);
+  out.shrines=dataList(d.shrines,4).map(s=>{
+    dataObject(s); return {lit:dataBool(s.lit),known:dataBool(s.known),beaten:dataBool(s.beaten,s.lit===true)};
+  });
+  if(out.shrines.filter(s=>s.lit).length!==out.lit) throw new Error("Inconsistent shrine count");
+  out.ruins=dataList(d.ruins,100).map(r=>{
+    if(typeof r!=="object") return {o:dataBool(r),c:false};
+    dataObject(r); return {o:dataBool(r.o),c:dataBool(r.c)};
+  });
+  if(out.world.ruins && out.world.ruins.length!==out.ruins.length) throw new Error("Inconsistent ruins");
+  out.villages=dataList(d.villages,5).map(v=>dataBool(v));
+  out.npcs=dataList(d.npcs,100).map(n=>{dataObject(n);return {line:dataInt(n.line,0,1e9,0),q:n.q==null?null:dataInt(n.q,1)};});
+  if(d.deep!=null){
+    const deep=dataObject(d.deep); out.deep={};
+    for(const key of ["known","open","cleared","woke"]) out.deep[key]=dataBool(deep[key]);
+  }
+  if(d.weather!=null){
+    const w=dataObject(d.weather);
+    out.weather={kind:dataChoice(w.kind,Object.keys(WKIND)),timer:dataNumber(w.timer,0,1000,60)};
+  }
+  out.mods=dataList(d.mods,WORLD*WORLD).map(m=>{
+    if(!Array.isArray(m)||m.length!==2) throw new Error("Invalid tile change");
+    const k=dataInt(m[0],0,(WORLD-1)*4096+WORLD-1);
+    if(k%4096>=WORLD) throw new Error("Invalid tile");
+    return [k,dataNumber(m[1],0,1e12)];
+  });
+  if(d.explored!==undefined){
+    const b=dataText(d.explored,MW*MW*4/3+4);
+    if(!/^[A-Za-z0-9+/]*={0,2}$/.test(b)) throw new Error("Invalid map");
+    const bytes=unb64(b);
+    if(bytes.length!==MW*MW || bytes.some(n=>n>1)) throw new Error("Invalid map size");
+    out.explored=b;
+  }
+  return out;
+}
 const CODE_TAG="EMBER1.";
 function utf8b64(str){
   const bytes=new TextEncoder().encode(str);
@@ -5296,7 +5610,7 @@ function unpackTrail(a){
 function exportCode(){
   const p=G.player;
   const data={
-    v:1, s:G.seed, n:(G.myName||"a traveller").slice(0,24),
+    v:2, s:G.seed, world:G.world, n:(G.myName||"a traveller").slice(0,24),
     d:G.day, l:p.lvl, lit:G.lit, lo:p.lore.length,
     k:G.stats.kills||0, t:G.stats.tasks||0, w:G.stats.wardens||0,
     a:G.stats.arcs||0, c:p.coins, lamp:G.stats.lamp?1:0,
@@ -5306,14 +5620,14 @@ function exportCode(){
   return CODE_TAG+utf8b64(JSON.stringify(data));
 }
 function importCode(raw){
-  const s=(raw||"").trim().replace(/\s+/g,"");
+  if(typeof raw!=="string" || raw.length>100000) return {err:"That code is too large or damaged."};
+  const s=raw.trim().replace(/\s+/g,"");
   if(!s.startsWith(CODE_TAG)) return {err:"That doesn't look like an Emberfall code."};
   let d;
-  try{ d=JSON.parse(unutf8b64(s.slice(CODE_TAG.length))); }
+  try{ d=dataFriend(parseData(unutf8b64(s.slice(CODE_TAG.length)),75000)); }
   catch(e){ return {err:"That code is damaged — ask for a fresh one."}; }
-  if(!d||typeof d.s!=="number") return {err:"That code is missing its world."};
   G.friends=G.friends||[];
-  const exist=G.friends.findIndex(f=>f.n===d.n && f.s===d.s);
+  const exist=G.friends.findIndex(f=>f.n===d.n && f.s===d.s && f.world.version===d.world.version);
   if(exist>=0) G.friends[exist]=d; else G.friends.push(d);
   if(G.friends.length>6) G.friends.shift();
   applyFriendMarks();
@@ -5322,12 +5636,12 @@ function importCode(raw){
 function applyFriendMarks(){
   G.notes=(G.notes||[]).filter(n=>n.mine);
   for(const f of (G.friends||[])){
-    if(f.s!==G.seed) continue;
+    if(!sameWorld(f)) continue;
     for(const n of (f.no||[])) G.notes.push({x:n[0],y:n[1],text:n[2],who:f.n,mine:false});
   }
 }
 function friendGhost(){
-  return (G.friends||[]).find(f=>f.s===G.seed && f.tr && f.tr.length) || null;
+  return (G.friends||[]).find(f=>sameWorld(f) && f.tr && f.tr.length) || null;
 }
 function drawNote(n){
   const x=sx(n.x), y=sy(n.y);
@@ -5343,8 +5657,8 @@ function drawNote(n){
   ctx.lineWidth=1.2; ctx.beginPath(); ctx.arc(x,y-20,7.5+gl*2,0,7); ctx.stroke();
 }
 function versusRow(label,me,them){
-  return '<div class="versus"><span class="me"><b>'+me+'</b></span>'+
-         '<span class="vk">'+label+'</span><span class="them"><b>'+them+'</b></span></div>';
+  return '<div class="versus"><span class="me"><b>'+esc(me)+'</b></span>'+
+         '<span class="vk">'+esc(label)+'</span><span class="them"><b>'+esc(them)+'</b></span></div>';
 }
 function sheetFriends(){
   const code=G.mode==="play"?exportCode():"";
@@ -5352,7 +5666,7 @@ function sheetFriends(){
   let h='<h2>Shared worlds</h2><p class="sub">There is no server here, so nothing is live. What you can do is hand somebody a code: it carries your world, your progress and the marks you left. Paste theirs and you can walk the same ground.</p>';
   h+='<h3>Your name on the code</h3><div class="shareBox">'+
      '<input id="whoIn" maxlength="24" placeholder="what should they call you" value="'+
-       ((G.myName||"").replace(/"/g,"&quot;"))+'">'+
+       esc(G.myName||"")+'">'+
      '<div class="shareRow"><button class="btn" id="whoSave">Save name</button></div></div>';
   h+='<h3>Your code</h3><div class="shareBox">'+
      '<textarea id="expOut" readonly>'+code+'</textarea>'+
@@ -5367,7 +5681,7 @@ function sheetFriends(){
   h+='<h3>'+(fr.length?"Runs you\u2019ve read":"No codes read yet")+'</h3>';
   if(!fr.length) h+='<p class="sub">When somebody gives you a code it lands here, with their marks and the line they walked.</p>';
   for(let i=0;i<fr.length;i++){
-    const f=fr[i], same=f.s===G.seed;
+    const f=fr[i], same=sameWorld(f);
     h+='<div class="ghostCard"><div style="flex:1">'+
        '<div class="gname">'+esc(f.n)+'</div>'+
        '<div class="gmeta">seed '+f.s+(same?" \u00b7 the same world as yours":" \u00b7 a different world")+
@@ -5392,12 +5706,15 @@ function wireFriends(){
   if(ws) ws.onclick=()=>{ G.myName=(wi.value||"").trim().slice(0,24);
     toast(G.myName?("Codes will say "+G.myName):"Name cleared","good"); openCodex("friends"); };
   const cc=q("#copyCode");
-  if(cc) cc.onclick=()=>{
+  if(cc) cc.onclick=async()=>{
     const ta=q("#expOut"); ta.select();
     let ok=false;
     try{ ok=document.execCommand("copy"); }catch(e){}
-    if(!ok && navigator.clipboard) navigator.clipboard.writeText(ta.value).then(()=>{},()=>{});
-    toast("Code copied — send it to them however you like","good"); sfx("click");
+    if(!ok && navigator.clipboard){
+      try{ await navigator.clipboard.writeText(ta.value); ok=true; }catch(e){}
+    }
+    toast(ok?"Code copied — send it to them however you like":"Copy failed — select the code and copy it manually",ok?"good":"bad");
+    if(ok) sfx("click");
   };
   const mh=q("#markHere");
   if(mh) mh.onclick=()=>{ closeSheet(); promptMark(); };
@@ -5405,15 +5722,15 @@ function wireFriends(){
   if(ib) ib.onclick=()=>{
     const r=importCode(q("#impIn").value);
     if(r.err){ toast(r.err,"bad"); return; }
-    toast("Read "+esc(r.ok.n)+"\u2019s run"+(r.ok.s===G.seed?" — their marks are in your world now":""),"gold");
+    toast("Read "+r.ok.n+"\u2019s run"+(sameWorld(r.ok)?" — their marks are in your world now":""),"gold");
     sfx("find"); openCodex("friends");
   };
   el.sheet.querySelectorAll("[data-walk]").forEach(b=>b.onclick=()=>{
     const f=G.friends[+b.dataset.walk];
     if(!f) return;
-    talkBox("Walk "+esc(f.n)+"\u2019s world?",
-      "This starts a fresh run on their seed. Your current run stays saved until you save over it.",
-      [{t:"Walk it",primary:true,fn:()=>{ closeTalk(); closeSheet(); startGame(String(f.s)); }},
+    talkBox("Walk "+f.n+"\u2019s world?",
+      "This starts a fresh run in their world. Autosave will replace your current saved run.",
+      [{t:"Walk it",primary:true,fn:()=>{ closeTalk(); closeSheet(); startGame(f.s,f.world); }},
        {t:"Stay here",fn:closeTalk}]);
   });
 }
@@ -5434,6 +5751,7 @@ const TABS=[
 let loreOpen=0;
 function openSheet(kind,arg){ openCodex(kind==="inv"?"bag":(kind==="craft"?"make":(kind==="quest"?"tasks":kind)),arg); }
 function openCodex(tab,arg){
+  clearInput();
   openPanel=tab; G.codexArg=arg!==undefined?arg:G.codexArg;
   el.modal.classList.remove("hidden");
   el.sheet.className="plate codexSheet";
@@ -5547,7 +5865,7 @@ function sheetTasks(){
   const main=mainQuest();
   let h='<h2>Tasks</h2><p class="sub">'+live.length+' open \u00b7 '+old.length+' finished</p>';
   if(main && !main.turned){
-    h+='<h3>The long night</h3><div class="qcard"><h5>'+main.title+'</h5><p>'+main.desc+'</p>'+
+    h+='<h3>The long night</h3><div class="qcard"><h5>'+esc(main.title)+'</h5><p>'+esc(main.desc)+'</p>'+
        '<div class="prog">'+Math.min(questCount(main),main.need)+' / '+main.need+'</div>';
     if(G.lit>=4){
       h+='<div class="prog">'+(G.deep&&G.deep.cleared?"The knot is untied."
@@ -5562,9 +5880,9 @@ function sheetTasks(){
     h+='<h3>Village work</h3>';
     for(const q of arcs){
       const a=ARCS.find(x=>x.id===q.arc);
-      h+='<div class="qcard '+(q.done?"done":"")+'"><h5>'+a.name+'</h5><p>'+q.desc+'</p>'+
+      h+='<div class="qcard '+(q.done?"done":"")+'"><h5>'+a.name+'</h5><p>'+esc(q.desc)+'</p>'+
          '<div class="prog">'+Math.min(questCount(q),q.need)+' / '+q.need+
-         (q.giver?' \u00b7 from '+q.giver:'')+(q.done?' \u00b7 ready to hand in':'')+'</div>'+
+         (q.giver?' \u00b7 from '+esc(q.giver):'')+(q.done?' \u00b7 ready to hand in':'')+'</div>'+
          '<div id="qsteps">';
       a.steps.forEach((s,i)=>{
         const st=G.arcs[a.id]||0;
@@ -5577,15 +5895,15 @@ function sheetTasks(){
   if(side.length){
     h+='<h3>Odd jobs</h3>';
     for(const q of side)
-      h+='<div class="qcard '+(q.done?"done":"")+'"><h5>'+q.title+'</h5><p>'+q.desc+'</p>'+
+      h+='<div class="qcard '+(q.done?"done":"")+'"><h5>'+esc(q.title)+'</h5><p>'+esc(q.desc)+'</p>'+
          '<div class="prog">'+Math.min(questCount(q),q.need)+' / '+q.need+
-         (q.giver?' \u00b7 from '+q.giver:'')+(q.done?' \u00b7 ready to hand in':'')+'</div></div>';
+         (q.giver?' \u00b7 from '+esc(q.giver):'')+(q.done?' \u00b7 ready to hand in':'')+'</div></div>';
   }
   if(!live.length) h+='<p class="sub">Nothing open. Villagers hand out work \u2014 the one with a mark over their head has something.</p>';
   if(old.length){
     h+='<h3>Finished</h3>';
     for(const q of old.slice(-8).reverse())
-      h+='<div class="qcard done"><h5>'+q.title+'</h5><p>Done'+(q.giver?" for "+q.giver:"")+'.</p></div>';
+      h+='<div class="qcard done"><h5>'+esc(q.title)+'</h5><p>Done'+(q.giver?" for "+esc(q.giver):"")+'.</p></div>';
   }
   return h;
 }
@@ -5731,7 +6049,7 @@ function refreshTracker(){
       : (has("ashkey") ? "<br><em>go to the middle of the world</em>"
       : "<br><em>fuse four relics into a Key of ash at a forge</em>"));
   else extra = "<br><em>"+Math.min(c,q.need)+" of "+q.need+(q.done?" \u2014 hand it in":"")+"</em>";
-  el.trackBody.innerHTML=q.desc+extra;
+  el.trackBody.innerHTML=esc(q.desc)+extra;
 }
 /* ---- maps -------------------------------------------------------------- */
 function drawMini(){
@@ -5802,7 +6120,7 @@ function drawBigMap(){
 
 /* ---- 21. wiring it together -------------------------------------------- */
 function sfx(kind){
-  if(!G.sound) return;
+  if(!G.sound || G.suspended) return;
   try{
     if(!AC) AC=new (window.AudioContext||window.webkitAudioContext)();
     if(AC.state==="suspended") AC.resume();
@@ -5848,7 +6166,7 @@ function drawFire(f){
     ctx.quadraticCurveTo(x-6,y-16,x,y-26*fl); ctx.fill();
     ctx.fillStyle="#8d8a84"; ctx.fillRect(x-19,y-38,10,5);
     ctx.fillStyle="#5a4326"; ctx.fillRect(x+9,y-40,4,30);
-    if(Math.random()<0.2) G.particles.push({x:f.x+(Math.random()-0.5)*10,y:f.y-28,
+    if(ambientParticle(0.2)) G.particles.push({x:f.x+(Math.random()-0.5)*10,y:f.y-28,
       vx:(Math.random()-0.5)*14,vy:-24-Math.random()*22,life:1.1,max:1.1,c:"#f0a33a",r:2,g:-14});
     return;
   }
@@ -5865,7 +6183,7 @@ function drawFire(f){
   ctx.fillStyle="#ffe6b0";
   ctx.beginPath(); ctx.moveTo(x,y-18*fl); ctx.quadraticCurveTo(x+3.4,y-10,x,y-6);
   ctx.quadraticCurveTo(x-3.4,y-10,x,y-18*fl); ctx.fill();
-  if(Math.random()<0.28) G.particles.push({x:f.x+(Math.random()-0.5)*9,y:f.y-18,
+  if(ambientParticle(0.28)) G.particles.push({x:f.x+(Math.random()-0.5)*9,y:f.y-18,
     vx:(Math.random()-0.5)*18,vy:-30-Math.random()*28,life:1,max:1,c:"#f0a33a",r:2,g:-18});
 }
 function drawDeepGate(){
@@ -5971,7 +6289,9 @@ function updateNpcs(dt){
 function loop(){
   requestAnimationFrame(loop);
   const t=now(); let raw=Math.min(0.05,t-last); last=t;
+  if(G.suspended) return;
   const dt=raw*(G.timeScale||1);
+  G.fxDt=G.mode==="menu"?raw:dt;
   if(!frozen()){
     G.time+=dt;
     G.dayT+=dt/DAYLEN;
@@ -6011,7 +6331,7 @@ function loop(){
   drawWaterFX();
   drawGround();
   props();
-  drawEffects(frozen()?0:dt);
+  drawEffects(G.mode==="menu"?raw:(frozen()?0:dt));
   drawLights();
   ctx.setTransform(DPR,0,0,DPR,0,0);
   drawGrade();
@@ -6030,18 +6350,20 @@ function loop(){
   }
 }
 /* ---- world setup ------------------------------------------------------- */
-function buildWorld(seed){
+function buildWorld(seed,world={version:2}){
   const keepFriends=G.friends||[], keepName=G.myName||"";
   G.seed=seed>>>0;
-  G.chunks.clear(); G.mods=new Map();
+  G.world=world;
+  G.chunks=new Map(); G.mods=new Map(); G.cam={x:0,y:0}; G.legacySave=null;
   G.enemies=[]; G.projectiles=[]; G.particles=[]; G.floaters=[]; G.fires=[];
-  G.quests=[]; G.qid=1; G.flags={}; G.kills={}; G.stats={}; G.lit=0;
+  G.quests=[]; G.qid=1; G.flags={stage:0}; G.kills={}; G.stats={}; G.lit=0;
   G.time=0; G.dayT=0.30; G.day=1;
   G.arcs={}; G.lanterns=[]; G.notes=[]; G.myNotes=[];
   G.friends=keepFriends; G.myName=keepName;
   G.bossRef=null; G.camLock=null; G.dawnFade=0; G.timeScale=1;
   G.cine=null; G.cineQ=[]; _pending.length=0;
   makeLandmarks();
+  G.world={version:world.version,ruins:G.ruins.map(r=>({tx:r.tx,ty:r.ty,seed:r.seed,lore:r.lore,big:r.big}))};
   G.npcs.forEach((n,i)=>n.id=i);
   initMap();
   initWeather();
@@ -6052,9 +6374,10 @@ function buildWorld(seed){
   }
   G.cam.x=G.player.x; G.cam.y=G.player.y;
   applyFriendMarks();
+  clearInput(); spawnT=0; hudT=0;
 }
-function startGame(seedStr){
-  buildWorld(seedFromString(seedStr));
+function startGame(seedStr,world){
+  buildWorld(typeof seedStr==="number"?seedStr:seedFromString(seedStr),world);
   addQuest({type:"main",key:"elder",need:1,
     title:"Find someone who knows",
     desc:"Villages show up in gold once you've walked near them. Whoever runs the first one you reach will know what happened to the sun."});
@@ -6072,6 +6395,8 @@ function beginPlay(){
   refreshHud(); refreshTracker(); drawMini();
   syncMusicPlayback();
   saveT=20;
+  if(G.deep.cleared && !G.flags.trueWon) endGame(true);
+  else if(G.lit>=4 && !G.flags.won) endGame();
 }
 function endGame(trueEnding){
   if(G.flags.won && !trueEnding) return;
@@ -6104,13 +6429,14 @@ function saveGame(quiet){
   try{
     const p=G.player;
     const data={
-      v:2, seed:G.seed, time:G.time, day:G.day, dayT:G.dayT, lit:G.lit,
+      v:3, world:G.world, seed:G.seed, time:G.time, day:G.day, dayT:G.dayT, lit:G.lit,
       flags:G.flags, kills:G.kills, stats:G.stats, qid:G.qid, quests:G.quests,
       arcs:G.arcs, dawnFade:G.dawnFade||0, myName:G.myName||"",
       player:{x:p.x,y:p.y,hp:p.hp,maxHp:p.maxHp,st:p.st,maxSt:p.maxSt,food:p.food,
               lvl:p.lvl,xp:p.xp,coins:p.coins,inv:p.inv,weapon:p.weapon,armour:p.armour,
               torch:p.torch,perks:p.perks,perkPts:p.perkPts,buffs:p.buffs,lore:p.lore,
-              shrineHp:p.shrineHp||0,trail:p.trail||[],wet:p.wet||0},
+              shrineHp:p.shrineHp||0,trail:p.trail||[],wet:p.wet||0,
+              alive:p.alive,deadT:Math.max(0,p.deadT),swindCd:p.swindCd||0},
       home:p.home?{x:p.home.x,y:p.home.y}:null,
       fires:G.fires.map(f=>({x:f.x,y:f.y,kind:f.kind||"camp"})),
       lanterns:(G.lanterns||[]).map(l=>({x:l.x,y:l.y})),
@@ -6124,66 +6450,85 @@ function saveGame(quiet){
       mods:Array.from(G.mods.entries()),
       explored:b64(G.explored)
     };
+    // Keep the pre-migration save recoverable before the first v3 write.
+    if(G.legacySave && !localStorage.getItem(SAVEKEY+".legacy-backup"))
+      localStorage.setItem(SAVEKEY+".legacy-backup",G.legacySave);
     localStorage.setItem(SAVEKEY, JSON.stringify(data));
+    G.legacySave=null;
     if(!quiet) toast("Saved","good");
     return true;
   }catch(e){ if(!quiet) toast("Couldn't save — storage is blocked here","bad"); return false; }
 }
 function loadGame(){
-  let data;
-  try{ data=JSON.parse(localStorage.getItem(SAVEKEY)); }catch(e){ return false; }
-  if(!data) return false;
-  G.friends=data.friends||G.friends||[]; G.myName=data.myName||G.myName||"";
-  buildWorld(data.seed);
-  G.time=data.time||0; G.day=data.day||1; G.dayT=data.dayT||0.25; G.lit=data.lit||0;
-  G.flags=data.flags||{}; G.kills=data.kills||{}; G.stats=data.stats||{};
-  G.qid=data.qid||1; G.quests=data.quests||[];
-  G.arcs=data.arcs||{};
-  Object.assign(G.player,data.player);
-  const p=G.player;
-  p.perks=p.perks||{}; p.perkPts=p.perkPts||0; p.buffs=p.buffs||{};
-  p.lore=p.lore||[]; p.trail=p.trail||[]; p.alive=true; p.deadT=0;
-  p.maxHp=baseMaxHp(); p.hp=Math.min(p.hp,p.maxHp);
-  G.fires=(data.fires||[]).map(f=>({x:f.x,y:f.y,kind:f.kind||"camp"}));
-  G.lanterns=(data.lanterns||[]).map(l=>({x:l.x,y:l.y}));
-  G.myNotes=data.myNotes||[];
-  G.notes=G.myNotes.map(n=>({x:n.x,y:n.y,text:n.text,who:null,mine:true}));
-  applyFriendMarks();
-  if(data.home) G.player.home=G.fires.find(f=>Math.abs(f.x-data.home.x)<2&&Math.abs(f.y-data.home.y)<2)
-    ||{x:data.home.x,y:data.home.y,kind:"camp"};
-  (data.shrines||[]).forEach((s,i)=>{ if(G.shrines[i]) Object.assign(G.shrines[i],s); });
-  (data.ruins||[]).forEach((o,i)=>{ if(!G.ruins[i]) return;
-    if(typeof o==="object"){ G.ruins[i].opened=!!o.o; G.ruins[i].captainDown=!!o.c; }
-    else G.ruins[i].opened=!!o; });
-  (data.villages||[]).forEach((o,i)=>{ if(G.villages[i]) G.villages[i].known=!!o; });
-  (data.npcs||[]).forEach((o,i)=>{ if(G.npcs[i]) G.npcs[i].line=o.line||0; });
-  if(data.deep && G.deep) Object.assign(G.deep,data.deep);
-  if(data.weather){ initWeather(); G.weather.kind=data.weather.kind||"clear";
-    G.weather.prev=G.weather.kind; G.weather.blend=1; G.weather.timer=data.weather.timer||60; }
-  G.dawnFade = data.dawnFade!==undefined ? data.dawnFade : (G.lit>=4?1:0);
-  G.mods=new Map(data.mods||[]);
-  if(data.explored){ const b=unb64(data.explored); G.explored.set(b.subarray(0,G.explored.length));
-    repaintMapFromExplored(); }
-  G.cam.x=G.player.x; G.cam.y=G.player.y;
-  return true;
+  let data, raw;
+  try{
+    raw=localStorage.getItem(SAVEKEY);
+    if(!raw) return false;
+    data=dataSave(parseData(raw));
+  }catch(e){ return false; }
+  const previous={...G}, pending=_pending.slice();
+  try{
+    buildWorld(data.seed,data.world);
+    if(data.shrines.length>G.shrines.length || data.ruins.length>G.ruins.length ||
+       data.villages.length>G.villages.length || data.npcs.length>G.npcs.length)
+      throw new Error("Saved landmarks do not match this world");
+    G.time=data.time; G.day=data.day; G.dayT=data.dayT; G.lit=data.lit;
+    G.flags=data.flags; G.kills=data.kills; G.stats=data.stats;
+    G.qid=data.qid; G.quests=data.quests; G.arcs=data.arcs;
+    G.myName=data.myName; G.friends=data.friends;
+    Object.assign(G.player,data.player);
+    const p=G.player;
+    p.maxHp=baseMaxHp(); p.hp=Math.min(p.hp,p.maxHp);
+    G.fires=data.fires; G.lanterns=data.lanterns; G.myNotes=data.myNotes;
+    G.notes=G.myNotes.map(n=>({...n,who:null,mine:true}));
+    applyFriendMarks();
+    if(data.home) p.home=G.fires.find(f=>Math.abs(f.x-data.home.x)<2&&Math.abs(f.y-data.home.y)<2)
+      ||{...data.home,kind:"camp"};
+    data.shrines.forEach((s,i)=>Object.assign(G.shrines[i],s));
+    data.ruins.forEach((r,i)=>{ G.ruins[i].opened=r.o; G.ruins[i].captainDown=r.c; });
+    data.villages.forEach((known,i)=>{ G.villages[i].known=known; });
+    data.npcs.forEach((n,i)=>{
+      G.npcs[i].line=n.line;
+      // Original v1 saves linked side quests through the NPC, not giverId.
+      const q=n.q && G.quests.find(q=>q.id===n.q&&!q.turned);
+      if(q) q.giverId=i;
+    });
+    if(data.deep) Object.assign(G.deep,data.deep);
+    if(data.weather){ G.weather={...G.weather,...data.weather,prev:data.weather.kind,blend:1}; }
+    G.dawnFade=G.lit>=4?1:data.dawnFade;
+    G.mods=new Map(data.mods);
+    if(data.explored){ G.explored.set(unb64(data.explored)); repaintMapFromExplored(); }
+    const main=mainQuest();
+    if(G.lit>0 || (main && main.key==="shrine")) G.flags.stage=1;
+    G.cam.x=p.x; G.cam.y=p.y;
+    G.legacySave=data.v<3?raw:null;
+    clearInput();
+    return true;
+  }catch(e){
+    // A failed restore never leaves a half-built world running or overwrites its save.
+    for(const key of Object.keys(G)) delete G[key];
+    Object.assign(G,previous);
+    _pending.splice(0,_pending.length,...pending);
+    return false;
+  }
 }
 /* ---- input ------------------------------------------------------------- */
 function toggle(kind){
-  if(G.cine) return;                       /* never stall the director */
+  if(G.cine || G.suspended || !el.end.classList.contains("hidden")) return;
   const map={inv:"bag",craft:"make",quest:"tasks"};
   const k=map[kind]||kind;
   if(openPanel===k) closeSheet(); else { sfx("click"); openCodex(k); }
 }
 addEventListener("keydown",e=>{
   const k=e.key.toLowerCase();
-  if(e.target.tagName==="INPUT"){
+  if(editingText(e.target)){
     if(k==="enter" && e.target.id==="noteIn") saveMark();
     if(k==="escape" && e.target.id==="noteIn") D.note.classList.add("hidden");
     return;
   }
-  if(G.mode!=="play") return;
-  if(k==="escape"){ if(G.cine) skipCine(); return; }
-  if(talkOpen()) return;
+  if(G.mode!=="play" || G.suspended || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  if(k==="escape") return;                 /* handled by the main input listener */
+  if(talkOpen() || G.cine || !el.end.classList.contains("hidden")) return;
   if(k==="p") toggle("perks");
   else if(k==="l") toggle("lore");
   else if(k==="b") toggle("friends");
@@ -6219,6 +6564,9 @@ document.getElementById("noteCancel").onclick=()=>{ D.note.classList.add("hidden
 })();
 /* ---- go -------------------------------------------------------------- */
 resize();
+try{ const sound=JSON.parse(localStorage.getItem("emberfall.sound"));
+  if(typeof sound==="boolean") G.sound=sound; }catch(e){}
+syncSoundButtons();
 $("#seedIn").value=(Math.random()*1e9)|0;
 buildWorld(seedFromString($("#seedIn").value));
 $("#btnLoad").disabled=!hasSave();
